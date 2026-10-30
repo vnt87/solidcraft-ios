@@ -458,6 +458,11 @@ completed drawings publish atomically. The browser still exports synchronously.
 
 - OpenSCAD navigation preset: left drag orbits, right/middle drag pans, Shift+right/middle
   drag zooms, and the wheel zooms. Available in the shared desktop/web Navigation preferences.
+- Touch (iPad) navigation preset for the iPadOS runner: one finger on empty space orbits, two
+  fingers pan, a pinch zooms around the fingers, and the Apple Pencil selects and edits without
+  ever moving the view (palms beside the Pencil are not gestures). The runner starts on this
+  preset once and keeps whatever the user picks afterwards. Two-finger double tap, the Pencil's
+  double tap and hover, and pressure-sensitive strokes are not implemented.
 - Compact clickable signed X/Y/Z axis tips, smooth drag-to-orbit, and Shift-orbit snapping
   to 26 standard and diagonal views. Pointer motion accumulates independently of a lightly
   damped spring, with a boundary margin to prevent flicker. Z-up/Y-up and the nearest square

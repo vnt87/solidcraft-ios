@@ -169,13 +169,9 @@ fn clipboard_text() -> Option<String> {
     {
         TEST_CLIPBOARD.with(|c| c.borrow().clone())
     }
-    #[cfg(all(not(test), not(target_arch = "wasm32")))]
+    #[cfg(not(test))]
     {
-        arboard::Clipboard::new().and_then(|mut c| c.get_text()).ok().filter(|t| !t.is_empty())
-    }
-    #[cfg(all(not(test), target_arch = "wasm32"))]
-    {
-        None
+        crate::clipboard::text()
     }
 }
 
@@ -273,7 +269,7 @@ pub(crate) fn menu(ui: &Ui, response: &mut Response, text: &mut dyn TextBuffer, 
     let done = apply(text, range, edit, clip().as_deref(), field);
     let ctx = ui.ctx();
     if let Some(copied) = done.copied {
-        ctx.copy_text(copied);
+        crate::clipboard::copy(ctx, copied);
     }
     let mut state = TextEditState::load(ctx, id).unwrap_or_default();
     state.cursor.set_char_range(Some(done.range));

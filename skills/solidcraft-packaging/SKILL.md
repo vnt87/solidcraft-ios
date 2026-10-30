@@ -1,6 +1,6 @@
 ---
 name: solidcraft-packaging
-description: "Use when preparing or shipping a SolidCraft release, changing installers or packages (AppImage, MSI, dmg, Flatpak, Snap, WinGet, Nix, FreeBSD, web), release asset names, signing or the Pages deployment."
+description: "Use when preparing or shipping a SolidCraft release, changing installers or packages (AppImage, MSI, dmg, Flatpak, Snap, WinGet, Nix, FreeBSD, web, the iPadOS Xcode bundle), release asset names, signing or the Pages deployment."
 ---
 
 # Packaging and releases
@@ -26,6 +26,7 @@ Development pushes are not application releases. Pushing to `main` or pushing a 
 - Documentation, the browser app and the Flatpak repository publish under project Pages `/solidcraft/`. Add no old-name Pages aliases.
 
 ## Where things live
-- `packaging/` holds the per-platform scripts (`packaging/linux`, `packaging/windows`, `packaging/macos`, `packaging/freebsd`, `packaging/web`); `packaging/tests` checks them.
+- `packaging/` holds the per-platform scripts (`packaging/linux`, `packaging/windows`, `packaging/macos`, `packaging/freebsd`, `packaging/web`, `packaging/ios`); `packaging/tests` checks them.
+- iPadOS: `packaging/ios` is an Xcode project around the `solidcraft-ios` static library; `cargo xtask ios --sim` builds, installs and launches it on an iPad simulator, and `--screenshot PATH` captures a PNG. The plist, icon and bundle contract have their own checks (`python3 -m unittest discover -s packaging/ios/tests`). It is not part of a release yet.
 - Nix: `flake.nix` and `docs/nix.md`. Building: `docs/building.md`. Downloads: `docs/downloads.md`.
 - Build with `CARGO_TARGET_DIR=<repo>/target`. Windows from Linux: `cargo xwin build --release --target x86_64-pc-windows-msvc -p solidcraft`.

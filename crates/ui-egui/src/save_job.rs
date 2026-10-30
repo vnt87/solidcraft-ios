@@ -66,7 +66,17 @@ pub fn tick(app: &mut SolveApp, wait: bool) {
         Some((_, Err(e))) => Err(e),
         None => Err(format!("{command}: the save stopped")),
     };
+    let saved = r.is_ok();
     app.finish_command(command, &r);
+    // The file reached the user once the host has taken it there; the managed copy stays the
+    // design's own (iPadOS), so a failed hand-over costs a status message, not the save.
+    if saved
+        && let Some(publish) = app.services.publish.as_ref()
+        && let Some(path) = app.session.path.as_deref()
+        && let Err(error) = publish(path)
+    {
+        app.set_status(error, true);
+    }
     crate::documents::saved_for_close(app);
 }
 

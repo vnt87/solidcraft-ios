@@ -56,6 +56,8 @@ pub const TABLE: &[(&str, Class)] = &[
     ("solidcraft", Class::Exempt),
     ("cli", Class::Exempt),
     ("web", Class::Exempt),
+    // the iPadOS runner: an app shell like `solidcraft`, in the same class
+    ("ios", Class::Exempt),
     ("xtask", Class::Exempt),
 ];
 

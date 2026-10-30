@@ -10,6 +10,7 @@ mod external_corpus;
 mod features;
 mod i18n;
 mod icons;
+mod ios;
 mod layers;
 mod licences;
 mod lists;
@@ -79,6 +80,10 @@ commands:
                   matrix workers across the binaries in flight; explicit RUST_TEST_THREADS and
                   ACTION_MATRIX_JOBS overrides still win
   wasm            cargo check every library crate and the web app for wasm32-unknown-unknown
+  ios (--sim | --device) [--release] [--dry-run] [--sim-name N] [--screenshot PATH]
+                  build the iPadOS bundle (packaging/ios), then boot, install and launch it on an
+                  iPad simulator or a physical iPad; --dry-run prints the plan on any host (macOS
+                  and Xcode run it; see packaging/ios/README.md)
   web-offline [DIR]
                   write the web build's service worker (sw.js: offline use, updates); run by
                   Trunk after release builds of apps/solidcraft-web, or on a built site in DIR
@@ -119,6 +124,7 @@ fn main() -> ExitCode {
         }
         Some("ci") => cmd_ci(),
         Some("wasm") => cmd_wasm(),
+        Some("ios") => ios::run(&root(), &rest),
         Some("web-offline") => web_offline::run(&root(), rest.first().copied()),
         Some("web-offline-test") => {
             let site = rest.iter().position(|a| *a == "--site").and_then(|i| rest.get(i + 1)).copied();

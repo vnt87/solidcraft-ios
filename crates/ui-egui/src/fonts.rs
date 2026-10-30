@@ -706,6 +706,17 @@ fn find_system_cjk_font() -> Option<Vec<u8>> {
     }
 
     // 3. Platform-specific dynamic directory search.
+    #[cfg(target_os = "ios")]
+    {
+        // The app container ships no fonts; the fallback faces live in the read-only system
+        // folders (Hiragino and PingFang are in LanguageSupport).
+        for dir in ["/System/Library/Fonts", "/System/Library/Fonts/Core", "/System/Library/Fonts/CoreAddition", "/System/Library/Fonts/LanguageSupport"] {
+            if let Some(bytes) = scan_dir_for_font(std::path::Path::new(dir), 2, is_cjk_font_name) {
+                return Some(bytes);
+            }
+        }
+    }
+
     #[cfg(target_os = "windows")]
     {
         if let Ok(windir) = std::env::var("WINDIR").or_else(|_| std::env::var("SystemRoot")) {
@@ -959,6 +970,14 @@ fn chinese_font_dirs() -> Vec<std::path::PathBuf> {
         if let Ok(home) = std::env::var("HOME") {
             dirs.push(std::path::PathBuf::from(&home).join(".local/share/fonts"));
             dirs.push(std::path::PathBuf::from(home).join(".fonts"));
+        }
+    }
+    // iPadOS keeps PingFang (and the fallback faces) in the read-only system font folders; the
+    // app container has none of its own.
+    #[cfg(target_os = "ios")]
+    {
+        for d in ["/System/Library/Fonts", "/System/Library/Fonts/Core", "/System/Library/Fonts/CoreAddition", "/System/Library/Fonts/LanguageSupport"] {
+            dirs.push(std::path::PathBuf::from(d));
         }
     }
     dirs

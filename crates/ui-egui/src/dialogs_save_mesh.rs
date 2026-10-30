@@ -606,6 +606,13 @@ fn save(app: &mut SolveApp, mut params: Value, path: &str) {
     let _language = crate::i18n::scope(&app.preferences.language);
     params["path"] = json!(path);
     let Ok(result) = app.run("file.save_mesh", params) else { return };
+    if let Some(publish) = app.services.publish.as_ref()
+        && let Some(written) = result.get("path").and_then(Value::as_str)
+        && let Err(error) = publish(written)
+    {
+        app.set_status(error, true);
+        return;
+    }
     report(app, &result);
 }
 

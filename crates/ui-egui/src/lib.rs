@@ -20,6 +20,7 @@ pub mod browser_canvas;
 pub mod browser_prompts;
 pub mod canvas;
 pub mod cli_link;
+pub mod clipboard;
 #[cfg(test)]
 mod colour_tokens_tests;
 #[cfg(test)]
@@ -290,6 +291,7 @@ pub mod tool_modifiers;
 pub mod toolbar;
 pub mod toolbar_custom;
 pub mod tools;
+mod touch;
 pub mod ui_kit;
 #[cfg(test)]
 mod ui_kit_guard_tests;
@@ -424,6 +426,10 @@ pub struct Services {
     /// Hand a design's bytes to the user as a downloaded file (name, bytes); the browser build's
     /// File > Download design. None: the host saves real files, so there is nothing to offer.
     pub download_design: Option<Box<dyn Fn(&str, &[u8]) -> Result<(), String>>>,
+    /// Take the file just saved or exported at `path` to where the user keeps it (iPadOS: the
+    /// document picker, or the destination a previous save remembered). None: `path` already is
+    /// the user's file (desktop, browser).
+    pub publish: Option<Box<dyn Fn(&str) -> Result<(), String>>>,
     /// Whether a recent design that is not in memory can be brought back by the host (the browser
     /// build remembers files it saved to the disk); None: it can't.
     pub can_restore: Option<Box<dyn Fn(&str) -> bool>>,
@@ -439,6 +445,11 @@ pub struct Services {
     /// Upload a model to EasyPrint (Printables' slicer in the browser) and answer with the address
     /// to open (`easyprint_ui`); None: this host can't, and the menu doesn't offer it.
     pub easyprint_upload: Option<easyprint_ui::Upload>,
+    /// The system clipboard's text (iPadOS: the pasteboard); None: the desktop's own clipboard.
+    pub clipboard_get: Option<clipboard::GetText>,
+    /// Put text on the system clipboard, for a host whose window layer only keeps its own (iPadOS:
+    /// the pasteboard, so text copies into other apps); None: egui's clipboard is the system's.
+    pub clipboard_set: Option<clipboard::SetText>,
 }
 
 /// The view before a sketch opened and the view that faced the sketch then (#7038).
@@ -701,6 +712,8 @@ pub struct SolveApp {
     applied_ui_font: String,
     /// The fonts installed include the system's fallback faces.
     applied_system_fonts: bool,
+    /// The fingers and Pencil on the glass, read before egui sees the frame.
+    pub touch: touch::TouchState,
 }
 
 impl Drop for SolveApp {
@@ -713,7 +726,9 @@ impl Drop for SolveApp {
 }
 
 impl SolveApp {
-    pub fn new(mut session: Session, services: Services) -> Self {
+    pub fn new(mut session: Session, mut services: Services) -> Self {
+        // The text fields' menus reach the clipboard without the app, so its bridge lives here.
+        clipboard::install(services.clipboard_get.take(), services.clipboard_set.take());
         #[cfg(test)]
         let image_host = Some(solidcraft_engine::render::job::CpuHost::cooperative());
         #[cfg(not(test))]
@@ -850,6 +865,7 @@ impl SolveApp {
             applied_fonts_language: "en".into(),
             applied_ui_font: String::new(),
             applied_system_fonts: false,
+            touch: touch::TouchState::default(),
         };
         easyprint_ui::install(&mut app);
         app
@@ -2564,9 +2580,10 @@ impl SolveApp {
         control::publish_design(self, &control::DESIGN_WATCH);
     }
 
-    /// The frame's input before the app reads it: synthetic events, then what is typed while a
-    /// capture hides the report waits for it (the control channel's typing too).
+    /// The frame's input before the app reads it: the frame's touches, then synthetic events, then
+    /// what is typed while a capture hides the report waits for it (the control channel's typing too).
     pub fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
+        self.touch.update(raw);
         self.synthetic_input(raw);
         issue_report::hold_input(self, raw);
     }

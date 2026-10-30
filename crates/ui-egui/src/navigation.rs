@@ -2,12 +2,15 @@
 //! viewport and the Render preview today, and any future canvas (a 2D drawing or flat pattern
 //! page calls it with orbit off, so pan and zoom still follow the user's bindings).
 //!
-//! One entry point, [`handle`], reads a frame's pointer, wheel, trackpad and modifier input over a
-//! view and moves `app.cam` the way Preferences › Navigation says: the navigation preset (Fusion,
-//! SolidWorks, Blender, Touchpad…), Orbit around, zoom to the cursor, the middle double-click and
-//! orbit snapping. The 3D mouse's motion goes through [`device`] too, with the page's
-//! [`NavCaps`], and so does a device app's over the navigation bridge. The view keys and the navigators act on `app.cam` independently of the page. New
-//! canvases must call `navigation::handle` rather than reading drags or the wheel themselves;
+//! One entry point, [`handle`], reads a frame's pointer, wheel, trackpad, touch and modifier input
+//! over a view and moves `app.cam` the way Preferences › Navigation says: the navigation preset
+//! (Fusion, SolidWorks, Blender, Touchpad, Touch (iPad)…), Orbit around, zoom to the cursor, the
+//! middle double-click and orbit snapping. Touches come through it too: two fingers pan and a
+//! pinch zooms, read from egui's multi-touch (`crate::touch` keeps the emulated pointer off the
+//! gesture), so a tablet navigates without a mouse. The 3D mouse's motion goes through [`device`]
+//! too, with the page's [`NavCaps`], and so does a device app's over the navigation bridge. The
+//! view keys and the navigators act on `app.cam` independently of the page. New canvases must call
+//! `navigation::handle` rather than reading drags or the wheel themselves;
 //! `hand_rolled_camera_input_is_rejected` fails when they do.
 
 use egui::{Pos2, Rect, pos2, vec2};
@@ -505,6 +508,17 @@ pub(crate) struct CameraInput {
     pub mode: Option<NavMode>,
 }
 
+/// Whether a bare left press follows the preset's left binding. OpenSCAD and the Touch mapping
+/// have one (orbit), but only from empty space, where nothing can be selected or dragged; the
+/// Touch mapping also leaves it to the Pencil, whose strokes always edit.
+fn left_binding_applies(nav: &str, empty: bool, pencil_down: bool) -> bool {
+    match nav {
+        crate::prefs::OPENSCAD_NAV => empty,
+        crate::prefs::TOUCH_NAV => empty && !pencil_down,
+        _ => true,
+    }
+}
+
 /// Camera input for one frame over `rect`: the navigation preset's buttons and modifiers, Orbit
 /// around, wheel, trackpad and pinch zoom (to the cursor), middle double-click, continuous orbit
 /// and orbit snapping. Every camera page calls this, so the mouse moves the camera the same way
@@ -585,8 +599,9 @@ pub(crate) fn handle(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect, resp: &e
     } else {
         scroll
     } + raw.modifier_zoom;
-    // Pinch-to-zoom (trackpad): direct manipulation, never smoothed.
-    let pinch = ui.input(|i| pinch_factor(i, options, page_height, zoom_modifier));
+    // Pinch-to-zoom (trackpad): direct manipulation, never smoothed. Fingers have their own
+    // block below; they never arrive as a zoom event (the runner enables no gesture recognizers).
+    let pinch = if app.touch.gesture() { 1.0 } else { ui.input(|i| pinch_factor(i, options, page_height, zoom_modifier)) };
     let h = rect.height().max(1.0) as f64;
     if inside && pinch != 1.0 {
         app.viewport.orbit_free = None;
@@ -629,6 +644,27 @@ pub(crate) fn handle(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect, resp: &e
             app.cam.pan(f64::from(pan.x), f64::from(pan.y), h);
         }
     }
+    // Fingers on the glass: two fingers pan the model and a pinch zooms it, the way a trackpad
+    // does, but read from the touches themselves. `touch::TouchState` keeps the pointer off the
+    // gesture, so a pan moves the camera instead of dragging whatever the first finger landed
+    // on. The fingers' centre is the zoom anchor, as the cursor is on a trackpad.
+    if inside
+        && app.touch.gesture()
+        && let Some(multi) = ui.input(|i| i.multi_touch())
+    {
+        app.viewport.orbit_free = None;
+        let translation = multi.translation_delta;
+        if translation.is_finite() && translation != egui::Vec2::ZERO {
+            app.cancel_view_animation();
+            app.cam.pan(f64::from(translation.x), f64::from(translation.y), h);
+        }
+        if multi.zoom_delta.is_finite() && multi.zoom_delta > 0.0 && multi.zoom_delta != 1.0 {
+            let f = f64::from(multi.zoom_delta).powf(-crate::prefs::zoom_sign(app));
+            let anchor = zoom_anchor(app, rect, Some(multi.center_pos), caps.orbit);
+            app.cancel_view_animation();
+            app.cam.zoom_at(f, anchor);
+        }
+    }
     if inside && caps.orbit && trackpad_orbit && raw.shift_pan != egui::Vec2::ZERO {
         app.cancel_view_animation();
         app.viewport.orbit_free = None;
@@ -650,9 +686,10 @@ pub(crate) fn handle(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect, resp: &e
                         && (crate::render_workspace::active(app) || (crate::dim_view::hit(p).is_none() && crate::sketch_tools::glyph_at(p).is_none()))
                 })
         };
-        let openscad_orbit =
-            app.preferences.nav == crate::prefs::OPENSCAD_NAV && app.tool.is_none() && app.dialog.is_none() && !mods.shift && empty_space(app);
-        let preset = if app.preferences.nav != crate::prefs::OPENSCAD_NAV || openscad_orbit {
+        // OpenSCAD and the Touch mapping follow their left binding only from empty space (a drag
+        // on geometry selects and drags), and Touch never under the Pencil: a stroke edits.
+        let empty = app.tool.is_none() && app.dialog.is_none() && !mods.shift && empty_space(app);
+        let preset = if left_binding_applies(&app.preferences.nav, empty, app.touch.pencil_down()) {
             crate::prefs::nav_mode(app, crate::prefs::NavButton::Left, mods)
         } else {
             None
@@ -1721,6 +1758,111 @@ mod tests {
                 assert!(before.distance(after) < 1e-3, "{fov} {pivot:?}: {before:?} -> {after:?}");
             }
         }
+    }
+
+    #[test]
+    fn empty_space_left_drags_navigate_only_where_nothing_can_be_selected() {
+        use crate::prefs::{OPENSCAD_NAV, TOUCH_NAV};
+        assert!(super::left_binding_applies(TOUCH_NAV, true, false), "a finger drag from empty space orbits");
+        assert!(!super::left_binding_applies(TOUCH_NAV, false, false), "a drag on geometry edits");
+        assert!(!super::left_binding_applies(TOUCH_NAV, true, true), "a Pencil stroke edits too");
+        assert!(super::left_binding_applies(OPENSCAD_NAV, true, false));
+        assert!(!super::left_binding_applies(OPENSCAD_NAV, false, true));
+        assert!(super::left_binding_applies("fusion", false, false), "other presets keep their bindings");
+    }
+
+    fn touch(id: u64, phase: egui::TouchPhase, pos: egui::Pos2, force: Option<f32>) -> egui::Event {
+        egui::Event::Touch { device_id: egui::TouchDeviceId(0), id: egui::TouchId::from(id), phase, pos, force }
+    }
+
+    /// egui-winit's emulated mouse: the first touch's press and its moves reach egui as a pointer.
+    fn emulated(pos: egui::Pos2, pressed: Option<bool>) -> Vec<egui::Event> {
+        let mut events = vec![egui::Event::PointerMoved(pos)];
+        if let Some(pressed) = pressed {
+            events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+        }
+        events
+    }
+
+    /// A harness on the Touch preset, settled on the design viewport.
+    fn touch_harness() -> (crate::scenario::Harness, egui::Rect) {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        crate::prefs::choose_nav_preset(&mut h.app.preferences, crate::prefs::nav_preset(crate::prefs::TOUCH_NAV));
+        h.frames(2);
+        let rect = h.app.viewport.rect.expect("the design viewport is on screen");
+        (h, rect)
+    }
+
+    #[test]
+    fn two_fingers_pan_and_pinch_the_camera() {
+        use egui::TouchPhase;
+        let (mut h, rect) = touch_harness();
+        let c = rect.center();
+        let (a, b) = (egui::pos2(c.x - 40.0, c.y), egui::pos2(c.x + 40.0, c.y));
+        let mut first = vec![touch(1, TouchPhase::Start, a, None)];
+        first.extend(emulated(a, Some(true)));
+        h.frame_with(first);
+        assert!(!h.app.touch.gesture(), "one finger is not a gesture");
+        let mut second = vec![touch(2, TouchPhase::Start, b, None)];
+        second.extend(emulated(b, None));
+        h.frame_with(second);
+        assert!(h.app.touch.gesture(), "two fingers are");
+        let before = h.app.cam;
+        // Both fingers move down the glass: the model follows them.
+        let d = 40.0;
+        h.frame_with(vec![touch(1, TouchPhase::Move, egui::pos2(a.x, a.y + d), None), touch(2, TouchPhase::Move, egui::pos2(b.x, b.y + d), None)]);
+        let mut expected = before;
+        expected.pan(0.0, f64::from(d), f64::from(rect.height()));
+        assert!(expected.target.dist(h.app.cam.target) < 1e-6, "{:?} -> {:?}", expected.target, h.app.cam.target);
+        assert!((h.app.cam.distance - before.distance).abs() < 1e-9, "a two-finger drag does not zoom");
+        // Spreading them apart zooms in.
+        let spread = h.app.cam;
+        h.frame_with(vec![
+            touch(1, TouchPhase::Move, egui::pos2(a.x - d, a.y + d), None),
+            touch(2, TouchPhase::Move, egui::pos2(b.x + d, b.y + d), None),
+        ]);
+        assert!(h.app.cam.distance < spread.distance * 0.99, "a pinch zooms in: {} -> {}", spread.distance, h.app.cam.distance);
+        assert!(h.app.cam.target.dist(spread.target) > 1e-6, "the pinch is anchored at the fingers, so the target moves");
+    }
+
+    #[test]
+    fn a_finger_drag_from_empty_space_orbits_on_the_touch_preset() {
+        use egui::TouchPhase;
+        let (mut h, rect) = touch_harness();
+        // Clear of the sample body in the middle and of the floating browser: a finger on
+        // geometry selects and drags it instead.
+        let c = rect.center() + egui::vec2(rect.width() * 0.3, 0.0);
+        let before = h.app.cam;
+        let mut press = vec![touch(1, TouchPhase::Start, c, None), touch(1, TouchPhase::Move, c, None)];
+        press.extend(emulated(c, Some(true)));
+        h.frame_with(press);
+        let mut drag = vec![touch(1, TouchPhase::Move, egui::pos2(c.x + 60.0, c.y), None)];
+        drag.extend(emulated(egui::pos2(c.x + 60.0, c.y), None));
+        h.frame_with(drag);
+        assert!(h.app.cam.yaw != before.yaw, "the model turns with the finger: {:?} -> {:?}", before, h.app.cam);
+        assert!((h.app.cam.distance - before.distance).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_pencil_stroke_never_moves_the_camera() {
+        use egui::TouchPhase;
+        let (mut h, rect) = touch_harness();
+        let c = rect.center();
+        let before = h.app.cam;
+        let mut press = vec![touch(1, TouchPhase::Start, c, Some(0.4))];
+        press.extend(emulated(c, Some(true)));
+        h.frame_with(press);
+        assert!(h.app.touch.pencil_down());
+        let to = egui::pos2(c.x + 90.0, c.y + 40.0);
+        let mut drag = vec![touch(1, TouchPhase::Move, to, Some(0.4))];
+        drag.extend(emulated(to, None));
+        h.frame_with(drag);
+        let mut lift = vec![touch(1, TouchPhase::End, to, Some(0.4))];
+        lift.extend(emulated(to, Some(false)));
+        h.frame_with(lift);
+        assert_eq!(h.app.cam, before, "the Pencil edits, it never navigates");
+        assert!(!h.app.touch.pencil_down());
     }
 
     /// Every page with a camera navigates through [`super::handle`] (#1454). A page that reads

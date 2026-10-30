@@ -99,7 +99,8 @@ The [architecture page](docs/architecture.md) has the layer table. The short ver
   commands.
 - `crates/ui-egui`: the desktop/web front end (egui + wgpu). It's swappable; nothing below it
   depends on egui.
-- `crates/mcp`, `apps/solidcraft`, `apps/solidcraft-cli`, `apps/solidcraft-web`.
+- `crates/mcp`, `apps/solidcraft`, `apps/solidcraft-cli`, `apps/solidcraft-web`,
+  `apps/solidcraft-ios` (the iPadOS runner, linked into `packaging/ios`).
 
 `cargo xtask layers` fails the build if a lower layer depends on a higher one.
 
@@ -126,9 +127,10 @@ The [architecture page](docs/architecture.md) has the layer table. The short ver
 4. **Never crash.** People trust a CAD app with their work.
    - Non-test code never uses `unwrap`, `expect`, `panic!` or indexing on input-derived data.
      There's no `unsafe` outside `apps/solidcraft/src/open_documents.rs` (macOS file-open events),
-     `apps/solidcraft/src/native_crash.rs` (Windows native crash capture) and
-     `crates/threedx-client/src/macos.rs` (the 3Dconnexion driver's client API on macOS), and the
-     compiler denies it.
+     `apps/solidcraft/src/native_crash.rs` (Windows native crash capture),
+     `crates/threedx-client/src/macos.rs` (the 3Dconnexion driver's client API on macOS) and the
+     three Apple-only modules of `apps/solidcraft-ios` (the exported entry symbol, the UIKit scene
+     delegate and pasteboard, the document importers), and the compiler denies it.
    - An unsupported case returns an error ("not supported yet: …"); it never panics.
    - Every call into truck goes through `solidcraft_kernel::guard`.
    - Every crash fix comes with a regression test.

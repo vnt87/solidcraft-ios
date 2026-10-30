@@ -35,6 +35,8 @@ use crate::viewport::NavMode;
 
 pub const UNITS: &[&str] = &["mm", "cm", "m", "in", "ft"];
 pub const OPENSCAD_NAV: &str = "openscad";
+/// Fingers navigate, the Pencil edits: the mapping the iPad runner picks on its first run.
+pub const TOUCH_NAV: &str = "touch";
 pub const TOUCHPAD_NAV: &str = "touchpad";
 /// A mouse button that can drag the camera.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -216,6 +218,17 @@ pub const NAV_PRESETS: &[NavPreset] = &[
         // Ctrl+left orbit is the drag from empty space every preset has: as a binding it would
         // also take a Ctrl+click on geometry, which adds to the selection.
         bindings: &[bind(Left, NavKeys::SHIFT_ALT, Zoom), bind(Left, NavKeys::ALT, Pan)],
+    },
+    NavPreset {
+        id: TOUCH_NAV,
+        label: "Touch (iPad)",
+        help: "One finger on empty space orbits, two fingers pan, a pinch zooms; the Apple Pencil selects and edits and never moves the view. With a mouse, the left button orbits from empty space and middle or right drag pans.",
+        reverse_zoom: false,
+        middle_double_click: None,
+        right_drag_orbits: None,
+        // The left button orbits from empty space only, and never with the Pencil down:
+        // `navigation::handle` gates it like OpenSCAD's, so a drag on geometry still edits.
+        bindings: &[bind(Left, NavKeys::NONE, Orbit), bind(Middle, NavKeys::NONE, Pan), bind(Right, NavKeys::NONE, Pan)],
     },
     NavPreset {
         id: TOUCHPAD_NAV,
@@ -884,6 +897,9 @@ preference_settings! {
     default_units: String = "mm".into(), PAGE_DESIGN;
     /// Mouse mapping: `fusion`, `solidworks` or `inventor`.
     nav: String = "fusion".into(), PAGE_NAVIGATION;
+    /// The iPad runner moved the mapping to Touch (iPad) once; after that the user's choice,
+    /// including another preset, is kept. Never set by the desktop app.
+    touch_nav_seen: bool = false, PAGE_NAVIGATION;
     /// Opt in to rotation through both poles with roll, without the Shift axis-snap spring.
     /// Independent of mouse bindings; false also preserves existing saved presets' behavior.
     free_orbit: bool = false, PAGE_NAVIGATION => check_tr("nav.free_orbit.label");
@@ -6731,6 +6747,20 @@ mod tests {
         assert_eq!(nav_mode(&app, NavButton::Right, none), Some(NavMode::Pan), "only an orbiting right drag is affected");
         set(&mut app, &json!({"right_drag_orbits": true, "nav": "solidworks"})).unwrap();
         assert_eq!(nav_mode(&app, NavButton::Right, none), Some(NavMode::Orbit), "turned back on, the right drag orbits again");
+    }
+
+    #[test]
+    fn touch_preset_orbits_with_one_finger_and_pans_with_two() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        choose_nav_preset(&mut app.preferences, nav_preset(TOUCH_NAV));
+        assert_eq!(app.preferences.nav, TOUCH_NAV);
+        assert_eq!(nav_mode(&app, NavButton::Left, Modifiers::default()), Some(NavMode::Orbit), "navigation gates the empty-space drag");
+        for button in [NavButton::Middle, NavButton::Right] {
+            assert_eq!(nav_mode(&app, button, Modifiers::default()), Some(NavMode::Pan));
+        }
+        let mut other = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        other.load_prefs(&app.prefs());
+        assert_eq!(other.preferences.nav, TOUCH_NAV);
     }
 
     #[test]

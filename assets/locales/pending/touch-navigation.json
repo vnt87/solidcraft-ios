@@ -1,0 +1,26 @@
+{
+  "en": {
+    "nav.touch.label": "Touch (iPad)",
+    "nav.touch.help": "One finger on empty space orbits, two fingers pan, a pinch zooms; the Apple Pencil selects and edits and never moves the view. With a mouse, the left button orbits from empty space and middle or right drag pans."
+  },
+  "ar": {
+    "nav.touch.label": "اللمس (iPad)",
+    "nav.touch.help": "إصبع واحد على مساحة فارغة يدوّر العرض، وإصبعان يحرّكانه، والقرص يكبّر؛ قلم Apple Pencil يحدّد ويحرّر ولا يحرّك العرض أبدًا. بالفأرة: الزر الأيسر على مساحة فارغة يدوّر، وسحب الزر الأوسط أو الأيمن يحرّك العرض."
+  },
+  "he": {
+    "nav.touch.label": "מגע (iPad)",
+    "nav.touch.help": "גרירה באצבע אחת על שטח ריק מסובבת את התצוגה, שתי אצבעות מזיזות, וצביטה מתקרבת ומתרחקת; ה-Apple Pencil בוחר ועורך ולעולם לא מזיז את התצוגה. בעכבר: גרירת לחצן שמאלי על שטח ריק מסובבת, וגרירת הלחצן האמצעי או הימני מזיזה."
+  },
+  "ja": {
+    "nav.touch.label": "タッチ（iPad）",
+    "nav.touch.help": "空きスペースを1本指でドラッグすると回転、2本指でパン、ピンチでズームします。Apple Pencil は選択と編集を行い、ビューは動かしません。マウスでは、空きスペースで左ボタンをドラッグすると回転、中ボタンまたは右ボタンのドラッグでパンします。"
+  },
+  "vi": {
+    "nav.touch.label": "Cảm ứng (iPad)",
+    "nav.touch.help": "Một ngón kéo trên vùng trống để xoay, hai ngón kéo để dịch, chụm hai ngón để thu phóng; Apple Pencil chọn và chỉnh sửa, không bao giờ di chuyển khung nhìn. Với chuột, kéo nút trái trên vùng trống để xoay, kéo nút giữa hoặc phải để dịch."
+  },
+  "zh": {
+    "nav.touch.label": "触控（iPad）",
+    "nav.touch.help": "单指在空白处拖动可旋转视图，双指拖动可平移，捏合可缩放；Apple Pencil 用于选择和编辑，绝不移动视图。使用鼠标时，在空白处按住左键拖动可旋转，中键或右键拖动可平移。"
+  }
+}

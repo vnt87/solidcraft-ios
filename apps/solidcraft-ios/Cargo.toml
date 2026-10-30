@@ -1,0 +1,46 @@
+[package]
+name = "solidcraft-ios"
+description = "SolidCraft native iPadOS app runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "solidcraft_ios"
+crate-type = ["staticlib", "rlib"]
+
+[features]
+default = ["raytrace-cpu", "bundled-render-library"]
+bundled-render-library = ["solidcraft-engine/bundled-render-library"]
+raytrace-cpu = ["solidcraft-engine/raytrace-cpu"]
+
+# The bridge exports the executable entry symbol for the Xcode-linked static library.
+# Unsafe is denied everywhere except the audited Apple-only entry and scene modules.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+too_many_arguments = "allow"
+type_complexity = "allow"
+neg_cmp_op_on_partial_ord = "allow"
+
+[dependencies]
+solidcraft-engine = { workspace = true }
+solidcraft-ui-egui = { workspace = true }
+serde_json = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
+egui = { workspace = true }
+log = { workspace = true }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+# Already pinned by eframe; the safe iOS window extension hides the status bar.
+winit = { version = "=0.30.13", default-features = false }
+objc2 = "=0.6.5"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSError", "NSURL", "NSString", "NSObject", "NSDictionary", "NSFileManager", "NSPathUtilities", "NSFileCoordinator", "NSFilePresenter", "NSOperation", "NSSet", "NSValue", "block2"] }
+objc2-ui-kit = { version = "=0.3.2", default-features = false, features = ["std", "UIApplication", "UIScene", "UISceneSession", "UISceneOptions", "UIWindow", "UIWindowScene", "UIResponder", "UIViewController", "UIDocumentPickerViewController", "UIOpenURLContext", "UIPasteboard", "block2", "objc2-uniform-type-identifiers"] }
+objc2-uniform-type-identifiers = { version = "=0.3.2", default-features = false, features = ["std", "UTType"] }
+block2 = "=0.6.2"
+dispatch2 = { version = "=0.3.1", default-features = false, features = ["std"] }

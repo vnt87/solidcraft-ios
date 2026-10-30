@@ -743,7 +743,7 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context) {
 /// Write clipboard text a copy left.
 pub fn flush(app: &mut SolveApp, ctx: &egui::Context) {
     if let Some(text) = app.clipboard_text.take() {
-        ctx.copy_text(text);
+        crate::clipboard::copy(ctx, text);
     }
 }
 
