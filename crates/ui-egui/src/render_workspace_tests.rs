@@ -1,5 +1,6 @@
 use super::*;
 use crate::scenario::Harness;
+use egui::Color32;
 use solidcraft_engine::Session;
 
 fn environment_editor_frame(h: &mut Harness, events: Vec<egui::Event>) {
@@ -867,6 +868,52 @@ mod async_path_host {
         h.frames(3);
     }
 
+    /// Choose the GPU path image method, which is what starts the deferred setup.
+    fn choose_gpu_path(h: &mut Harness) {
+        select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+        h.frames(1);
+    }
+
+    /// Entering Render and moving its view with the Raster (or CPU) image method never compiles
+    /// the GPU path tracer: on Vulkan drivers that compile takes gigabytes (#9041). Choosing the
+    /// GPU path method starts it, once.
+    #[test]
+    fn render_with_another_image_method_never_starts_the_path_setup() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let mut h = Harness::new();
+        h.call("ui.resize", json!({"width":1200,"height":900}));
+        h.app.render_workspace.defer_path_host("selected viewport".into(), move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            job::ImageHost::with_executor(Arc::new(TestExecutor)).map_err(|e| e.to_string())
+        });
+        enter(&mut h.app, true).unwrap();
+        assert_eq!(h.app.render_workspace.view.method, ImageMethod::Raster);
+        for step in 0..20 {
+            h.call("ui.camera", json!({"yaw": f64::from(step) * 0.1, "pitch": 0.3}));
+            h.frames(1);
+        }
+        select_image_method(&mut h.app, ImageMethod::CpuRaytrace);
+        h.frames(5);
+        enter(&mut h.app, false).unwrap();
+        enter(&mut h.app, true).unwrap();
+        h.frames(5);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(matches!(h.app.render_workspace.path_host, PathHost::NotStarted));
+        assert!(h.app.render_workspace.pending_setup.is_some());
+        choose_gpu_path(&mut h);
+        finish_setup(&mut h);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(h.app.render_workspace.path_host, PathHost::Ready(_)));
+        // The GPU method chosen in Design (a loaded setup) waits for Render.
+        let mut h = Harness::new();
+        h.app.render_workspace.defer_path_host("selected viewport".into(), || Err("not opened".into()));
+        select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+        h.frames(5);
+        assert!(matches!(h.app.render_workspace.path_host, PathHost::NotStarted));
+    }
+
     #[test]
     fn design_frames_and_document_reset_never_start_the_deferred_path_host() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -884,6 +931,7 @@ mod async_path_host {
         assert!(matches!(h.app.render_workspace.path_host, PathHost::NotStarted));
         assert!(h.app.render_workspace.pending_setup.is_some());
         enter(&mut h.app, true).unwrap();
+        choose_gpu_path(&mut h);
         finish_setup(&mut h);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(matches!(h.app.render_workspace.path_host, PathHost::Ready(_)));
@@ -905,6 +953,8 @@ mod async_path_host {
             Err("deliberate device refusal".into())
         });
         sync_backend(&mut h.app);
+        assert!(matches!(h.app.render_workspace.path_host, PathHost::NotStarted));
+        choose_gpu_path(&mut h);
         finish_setup(&mut h);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(matches!(h.app.render_workspace.path_host, PathHost::Failed(_)));
@@ -923,6 +973,7 @@ mod async_path_host {
         h.frames(5);
         assert_eq!(h.app.render_workspace.setup_key.as_deref(), Some("selected safe-mode adapter"));
         enter(&mut h.app, true).unwrap();
+        choose_gpu_path(&mut h);
         finish_setup(&mut h);
         let PathHost::Failed(message) = &h.app.render_workspace.path_host else { panic!("expected selected adapter result") };
         assert_eq!(message, "selected adapter unavailable");
@@ -1297,6 +1348,150 @@ fn saved_camera_survives_frames_and_product_fit_ignores_selection() {
     assert_eq!(h.app.cam, selected_fit, "Fit Product ignores the selected subset");
     enter(&mut h.app, false).unwrap();
     assert_eq!(h.app.cam, design);
+}
+
+/// Inspect the mesh submitted by the actual Render canvas, including its GPU-unavailable path.
+/// This is a headless colour handoff assertion, not a rendered-pixel or screenshot comparison.
+fn render_preview_background_frame(h: &mut Harness, time: f64) -> [Color32; 4] {
+    let app = &mut h.app;
+    let mut viewport = egui::Rect::NOTHING;
+    let mut output = h.ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+            time: Some(time),
+            ..Default::default()
+        },
+        |ui| {
+            app.logic(ui.ctx());
+            viewport = ui.max_rect();
+            show(app, ui);
+        },
+    );
+    let corners = [viewport.left_top(), viewport.right_top(), viewport.right_bottom(), viewport.left_bottom()];
+    let colors = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Mesh(mesh) if mesh.vertices.len() == 4 && mesh.vertices.iter().zip(corners).all(|(vertex, corner)| vertex.pos == corner) => {
+                Some(std::array::from_fn(|i| mesh.vertices[i].color))
+            }
+            _ => None,
+        })
+        .expect("Render must paint a background mesh over the full viewport");
+    output.textures_delta.clear();
+    colors
+}
+
+#[test]
+fn render_preview_tab_surfaces_use_published_gradient_through_fade() {
+    for base in ["dark", "light"] {
+        let mut h = Harness::new();
+        let file = crate::theme_files::tab_fixture(base);
+        crate::prefs::control(&mut h.app, &json!({"theme_import":crate::theme_files::export_file(&file)})).unwrap();
+        let app = &mut h.app;
+        h.ctx.run_ui(egui::RawInput { time: Some(1.0), ..Default::default() }, |ui| app.logic(ui.ctx())).textures_delta.clear();
+        let model = Tokens::get();
+        enter(&mut h.app, true).unwrap();
+        assert!(h.app.session.doc.render.setups.is_empty());
+        let document = h.app.session.doc.clone();
+        let request = image_request(&h.app).unwrap();
+        let history = (h.app.session.revision, h.app.session.undo.len());
+        let end = crate::theme_files::resolve_for_tab(&file, &Default::default(), Some("RENDER"));
+        let expected_start = [model.viewport_top, model.viewport_top, model.viewport_bottom, model.viewport_bottom];
+        let expected_end = [end.viewport_top, end.viewport_top, end.viewport_bottom, end.viewport_bottom];
+        let mut previous = expected_start;
+        for progress in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let colors = render_preview_background_frame(&mut h, 2.0 + 0.24 * progress);
+            let shown = Tokens::get();
+            assert_eq!(colors, [shown.viewport_top, shown.viewport_top, shown.viewport_bottom, shown.viewport_bottom]);
+            if progress == 0.0 {
+                assert_eq!(colors, expected_start);
+            } else if progress == 1.0 {
+                assert_eq!(colors, expected_end);
+            } else if progress <= 0.5 {
+                assert_ne!(colors, expected_start, "the Render canvas must leave the starting colours at {progress}");
+                assert_ne!(colors, expected_end, "the Render canvas must receive intermediate fade colours at {progress}");
+                assert_ne!(colors, previous, "the Render canvas fade must advance between early samples at {progress}");
+            }
+            // At 75% elapsed time, ease-out cubic is already 98.4375% of the way to the
+            // destination. Byte quantization can legitimately produce the exact final colours.
+            previous = colors;
+            assert!(Arc::ptr_eq(&document, &h.app.session.doc));
+            assert_eq!((h.app.session.revision, h.app.session.undo.len()), history);
+            assert_eq!(image_request(&h.app).unwrap(), request, "UI themes never modify rendered image settings");
+        }
+        assert_eq!(render_preview_background_frame(&mut h, 3.0), expected_end);
+    }
+}
+
+#[test]
+fn render_preview_tab_surfaces_preserve_scene_backplates_and_viewport_overrides() {
+    for base in ["dark", "light"] {
+        let mut h = Harness::new();
+        let file = crate::theme_files::tab_fixture(base);
+        crate::prefs::control(
+            &mut h.app,
+            &json!({
+                "theme_import":crate::theme_files::export_file(&file),
+                "theme_options":{&file.id:{"tab_fade_ms":0}}
+            }),
+        )
+        .unwrap();
+        enter(&mut h.app, true).unwrap();
+        let scene_rgb = h.app.render_workspace.view.draft.background;
+        let scene = [Color32::from_rgb(scene_rgb[0], scene_rgb[1], scene_rgb[2]); 4];
+        let gradient = render_preview_background_frame(&mut h, 1.0);
+        assert_ne!(gradient, scene);
+
+        crate::prefs::control(&mut h.app, &json!({"theme_options":{&file.id:{"tab_colours":false}}})).unwrap();
+        assert_eq!(render_preview_background_frame(&mut h, 2.0), scene);
+        crate::prefs::control(
+            &mut h.app,
+            &json!({"theme_options":{&file.id:{"tab_colours":true}},"viewport_theme":if base == "dark" {"light"} else {"dark"}}),
+        )
+        .unwrap();
+        let opposite = if base == "dark" { Tokens::light() } else { Tokens::dark() };
+        assert_eq!(
+            render_preview_background_frame(&mut h, 3.0),
+            [opposite.viewport_top, opposite.viewport_top, opposite.viewport_bottom, opposite.viewport_bottom]
+        );
+        crate::prefs::control(&mut h.app, &json!({"viewport_theme":"theme","viewport_background":[3,7,11]})).unwrap();
+        assert_eq!(render_preview_background_frame(&mut h, 4.0), [Color32::from_rgb(3, 7, 11); 4]);
+
+        // Authored scene intent takes priority even over a viewport preference. Test temporary
+        // drafts as well as saved setups, without persisting any theme colour into the scene.
+        let original = h.app.render_workspace.view.clone();
+        for case in 0..6 {
+            h.app.render_workspace.view = original.clone();
+            match case {
+                0 => h.app.render_workspace.view.draft.background = [21, 43, 65],
+                1 => h.app.render_workspace.view.transparent = true,
+                2 => h.app.render_workspace.view.studio.backdrop_enabled = true,
+                3 => h.app.render_workspace.view.studio.environment = studio::Environment::Sky,
+                4 => h.app.render_workspace.view.cpu.environment = cpu::Environment::Constant,
+                _ => {
+                    h.app.render_workspace.view.raytrace.environment =
+                        Some(solidcraft_engine::render::job::RaytraceEnvironmentOptions { color: [0.2, 0.3, 0.4], intensity: 1.0 })
+                }
+            }
+            let expected = if case == 0 { [Color32::from_rgb(21, 43, 65); 4] } else { scene };
+            assert_eq!(render_preview_background_frame(&mut h, 5.0 + f64::from(case)), expected);
+        }
+        h.app.render_workspace.view = original;
+        h.app.run("render.settings.set", json!({"name":"Studio","set":{"camera":h.app.cam}})).unwrap();
+        setups::load(&mut h.app);
+        let authored = h.app.session.doc.clone();
+        assert_eq!(render_preview_background_frame(&mut h, 11.0), scene, "even a saved default-colour backplate is scene-owned");
+        assert!(Arc::ptr_eq(&authored, &h.app.session.doc));
+
+        // A theme without tabs keeps the legacy Render background, as do built-in themes.
+        h.app.render_workspace.view.name = "Unsaved".into();
+        setups::load(&mut h.app);
+        crate::prefs::control(&mut h.app, &json!({"theme_import":{"format":"solidcraft-theme/1","name":"No tabs","base":base}})).unwrap();
+        assert_eq!(render_preview_background_frame(&mut h, 12.0), scene);
+        crate::prefs::control(&mut h.app, &json!({"theme":base})).unwrap();
+        assert_eq!(render_preview_background_frame(&mut h, 13.0), scene);
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2158,6 +2353,7 @@ fn delayed_image_export_never_substitutes_a_newer_retained_image() {
     use crate::picker_test_support::{Slot, save};
     let (mut h, job) = async_export_fixture();
     let path = h.dir.join("old-image.png");
+    let bytes = h.app.session.render_job_handle(job).unwrap().frame().unwrap().unwrap().png().to_vec();
     let ctx = crate::fonts::test_context();
     let slot: Slot = Default::default();
     save(&mut h.app, &slot);
@@ -2167,9 +2363,18 @@ fn delayed_image_export_never_substitutes_a_newer_retained_image() {
     h.app.render_workspace.view.completed = Some(newer);
     *slot.borrow_mut() = Some(Some(path.to_string_lossy().into_owned()));
     crate::file_picker::tick(&mut h.app, &ctx);
-    assert!(!path.exists(), "the evicted requested image must fail instead of exporting the newer image");
-    assert!(matches!(&h.app.status, Some((_, _, true))));
+    assert_eq!(std::fs::read(&path).unwrap(), bytes, "an older retained image remains the exact pending export source");
     assert_eq!(h.app.render_workspace.view.completed, Some(newer));
+    let evicted = h.dir.join("evicted.png");
+    export_image(&mut h.app, job, false);
+    crate::file_picker::tick(&mut h.app, &ctx);
+    for _ in 0..7 {
+        completed_preview(&mut h, [50, 60, 70]);
+    }
+    *slot.borrow_mut() = Some(Some(evicted.to_string_lossy().into_owned()));
+    crate::file_picker::tick(&mut h.app, &ctx);
+    assert!(!evicted.exists(), "an evicted requested image fails without substituting a newer image");
+    assert!(matches!(&h.app.status, Some((_, _, true))));
     let newer_path = h.dir.join("new-image.png");
     h.app.run("render.export", json!({"job":newer,"path":newer_path})).unwrap();
     assert!(newer_path.is_file());
@@ -4432,6 +4637,35 @@ fn render_workspace_pick_stage_tools_filter_sample_clicks_with_shots_shown_and_h
 }
 
 #[test]
+fn modelling_select_panel_shows_and_clears_renders_component_pick() {
+    use egui::accesskit::{Role, Toggled};
+    const BODY: &str = "Select bodies (a face picks its body)";
+    const COMPONENT: &str = "Select components (a face picks its component)";
+    let (mut h, _) = render_pick_sample();
+    h.step(&json!({"click":{"handle":"render:pick:component"}})).unwrap();
+    enter(&mut h.app, false).unwrap();
+    h.settle();
+    h.step(&json!({"click":{"handle":"tab:VIEW"}})).unwrap();
+    h.step(&json!({"click":{"handle":"panel:VIEW:SELECT"}})).unwrap();
+
+    let check = |h: &Harness, body: bool, component: bool| {
+        assert_eq!((h.app.ui.pick_bodies, h.app.ui.pick_components), (body, component));
+        let tree = h.output.accesskit_update.as_ref().unwrap();
+        for (label, on) in [(BODY, body), (COMPONENT, component)] {
+            let node = tree.nodes.iter().find(|(_, n)| n.role() == Role::CheckBox && n.label() == Some(label));
+            assert_eq!(node.and_then(|(_, n)| n.toggled()), Some(if on { Toggled::True } else { Toggled::False }), "{label}");
+        }
+    };
+    check(&h, false, true);
+    h.step(&json!({"widget":"Faces"})).unwrap();
+    for (label, body, component) in [(COMPONENT, false, false), (BODY, true, false), (COMPONENT, false, true), (BODY, true, false)] {
+        h.step(&json!({"widget":label})).unwrap();
+        check(&h, body, component);
+        assert!(h.app.ui.pick_off.iter().any(|kind| kind == "faces"), "changing pick mode must preserve the panel's Faces filter");
+    }
+}
+
+#[test]
 fn render_workspace_click_modifiers_clear_and_browser_share_selection() {
     use solidcraft_engine::Sel;
     let mut h = Harness::new();
@@ -5614,6 +5848,117 @@ fn output_viewer_r_starts_active_setup_and_escape_returns_to_model_without_cance
     assert_ne!(crate::keymap::command_for(&h.app, "R"), Some("render.start"));
 }
 
+#[test]
+fn retained_results_picker_and_discard_dispatch_the_selected_index() {
+    let mut h = output_viewer_fixture();
+    let first = completed_preview(&mut h, [20, 40, 60]);
+    let second = completed_preview(&mut h, [80, 100, 120]);
+    let document = h.app.session.doc.clone();
+    let before = (h.app.session.undo.len(), h.app.session.redo.len(), h.app.session.revision);
+    h.app.run("render.result.select", json!({"index":1})).unwrap();
+    h.frames(3);
+    h.step(&json!({"click":{"handle":"render:results"}})).unwrap();
+    h.frames(2);
+    h.step(&json!({"click":{"handle":"render:result:select:0"}})).unwrap();
+    h.frames(2);
+    assert_eq!(h.app.render_workspace.view.completed, Some(first));
+    h.step(&json!({"click":{"handle":"render:result-discard"}})).unwrap();
+    h.frames(2);
+    assert_eq!(h.app.render_workspace.view.completed, Some(second));
+    assert_eq!(h.app.render_workspace.view.retained.len(), 1);
+    assert!(Arc::ptr_eq(&document, &h.app.session.doc));
+    assert_eq!(before, (h.app.session.undo.len(), h.app.session.redo.len(), h.app.session.revision));
+}
+
+#[test]
+fn retained_results_select_discard_copy_export_and_repaint_keep_exact_selected_pixels() {
+    let mut h = output_viewer_fixture();
+    let ctx = crate::fonts::test_context();
+    let document = h.app.session.doc.clone();
+    let before = (h.app.session.undo.len(), h.app.session.redo.len(), h.app.session.revision);
+    let mut jobs = Vec::new();
+    for shade in 0..10 {
+        let job = completed_preview(&mut h, [shade * 20, 40, 60]);
+        h.app.render_workspace.view.job = Some(job);
+        h.app.render_workspace.view.job_shot = Some(format!("Shot {shade}"));
+        cache_render_images(&mut h.app, &ctx);
+        jobs.push(job);
+    }
+    assert_eq!(h.app.render_workspace.view.retained.len(), 8);
+    assert_eq!(h.app.render_workspace.view.retained.iter().map(|result| result.frame.job).collect::<Vec<_>>(), jobs[2..]);
+    assert_eq!(h.app.render_workspace.view.retained[0].shot.as_deref(), Some("Shot 2"));
+    h.app.run("render.result.select", json!({"index":0})).unwrap();
+    assert!(h.app.render_workspace.view.result);
+    for _ in 0..3 {
+        cache_render_images(&mut h.app, &ctx);
+        assert_eq!(h.app.render_workspace.view.completed, Some(jobs[2]));
+        assert_eq!(h.app.render_workspace.image_info.as_ref().unwrap().job, jobs[2]);
+    }
+    h.app.run("render.result.copy", json!({})).unwrap();
+    assert!(h.app.render_workspace.clipboard_image.as_ref().unwrap().pixels.iter().all(|pixel| *pixel == Color32::from_rgb(40, 40, 60)));
+    let frame = h.app.session.render_job_handle(jobs[2]).unwrap().frame().unwrap().unwrap();
+    let path = h.dir.join("selected-result.png");
+    h.app.run("render.export", json!({"path":path})).unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), frame.png());
+    h.app.run("render.result.discard", json!({"index":0})).unwrap();
+    cache_render_images(&mut h.app, &ctx);
+    assert_eq!(h.app.render_workspace.view.completed, Some(jobs[9]));
+    assert!(h.app.session.render_job_handle(jobs[2]).is_err());
+    assert!(h.app.run("render.result.select", json!({"index":7})).is_err());
+    assert!(Arc::ptr_eq(&document, &h.app.session.doc));
+    assert_eq!(before, (h.app.session.undo.len(), h.app.session.redo.len(), h.app.session.revision));
+    ctx.run_ui(Default::default(), |_| {}).textures_delta.clear();
+}
+
+#[test]
+fn retained_results_and_selection_stay_with_the_document_tab_and_clear_on_reset() {
+    let mut h = output_viewer_fixture();
+    let first = completed_preview(&mut h, [20, 40, 60]);
+    let second = completed_preview(&mut h, [80, 100, 120]);
+    h.app.render_workspace.view.job = Some(second);
+    cache_render_images(&mut h.app, &h.ctx);
+    h.app.run("render.result.select", json!({"index":0})).unwrap();
+    h.app.run("solid.box", json!({"length":1,"width":1,"height":1})).unwrap();
+    cache_render_images(&mut h.app, &h.ctx);
+    assert!(h.app.render_workspace.view.retained.iter().all(|result| result.stale));
+    crate::documents::open_tab(&mut h.app, Session::default()).unwrap();
+    assert!(h.app.render_workspace.view.retained.is_empty());
+    assert!(h.app.run("render.result.select", json!({"index":0})).is_err());
+    crate::documents::switch(&mut h.app, 0);
+    cache_render_images(&mut h.app, &h.ctx);
+    assert_eq!(h.app.render_workspace.view.completed, Some(first));
+    assert_eq!(h.app.render_workspace.view.retained.len(), 2);
+    h.app.run("render.result.discard", json!({"index":0})).unwrap();
+    h.app.run("render.result.discard", json!({"index":0})).unwrap();
+    cache_render_images(&mut h.app, &h.ctx);
+    assert!(h.app.render_workspace.view.completed.is_none());
+    assert!(displayed_image(&h.app).is_none(), "polling the discarded active job cannot resurrect its image");
+    reset_document(&mut h.app);
+    assert!(h.app.render_workspace.view.retained.is_empty());
+}
+
+#[test]
+fn retained_results_capture_the_draft_shot_name_before_the_user_switches_shots() {
+    let mut h = output_viewer_fixture();
+    h.app.render_workspace.view.name = "Hero".into();
+    let reply = h.app.run("render.start", json!({"settings":{"width":8,"height":8}})).unwrap();
+    let job = serde_json::from_value(reply["job"].clone()).unwrap();
+    let host = h.app.session.render_job_host().unwrap().clone();
+    for _ in 0..100 {
+        if !host.pump(16384).unwrap() {
+            break;
+        }
+    }
+    let duration = h.app.session.render_job_handle(job).unwrap().completed_duration().unwrap().unwrap().as_secs_f64();
+    h.app.render_workspace.view.name = "Front".into();
+    h.app.run("render.start", json!({"settings":{"width":8,"height":8}})).unwrap();
+    sync_results(&mut h.app);
+    assert_eq!(h.app.render_workspace.view.retained[0].shot.as_deref(), Some("Hero"));
+    assert_eq!(h.app.render_workspace.view.retained[0].seconds, duration);
+    assert_eq!(h.app.render_workspace.view.completed, Some(job));
+    assert!(h.app.dialog.is_none());
+}
+
 /// Actual app controls and retained pixels, rasterized from egui without a window.
 #[test]
 fn output_viewer_evidence() {
@@ -5714,8 +6059,9 @@ fn output_viewer_evidence() {
 }
 
 #[test]
-fn output_viewer_radial_defaults_enable_lights_and_keep_planned_compare_disabled() {
-    let h = output_viewer_fixture();
+fn output_viewer_radial_defaults_enable_lights_and_compare_requires_a_result() {
+    let mut h = render_lights_fixture();
+    h.app.session.set_render_job_host(Some(solidcraft_engine::render::job::CpuHost::cooperative())).unwrap();
     let expected = [
         "render.start",
         "appearance.assign",
@@ -5727,8 +6073,12 @@ fn output_viewer_radial_defaults_enable_lights_and_keep_planned_compare_disabled
         "undo",
     ];
     assert_eq!(crate::mouse_gesture::Studio::Render.defaults(), expected);
+    assert!(solidcraft_engine::find_command("render.lights.add").unwrap().planned.is_none());
     assert!(crate::mouse_gesture::item(&h.app, "render.lights.add").unwrap().enabled);
     assert!(!crate::mouse_gesture::item(&h.app, "render.compare").unwrap().enabled);
+    completed_preview(&mut h, [20, 40, 60]);
+    assert!(crate::mouse_gesture::item(&h.app, "render.compare").unwrap().enabled);
+    assert!(crate::mouse_gesture::item(&h.app, "render.lights.add").unwrap().enabled);
 }
 
 #[test]
@@ -5756,7 +6106,7 @@ fn output_viewer_presets_are_commands_with_limits_and_custom_keeps_the_size() {
 }
 
 #[test]
-fn output_viewer_has_sections_without_pages_or_footer_and_selected_row_routes_to_output() {
+fn output_viewer_has_sections_and_shared_footer_without_pages_and_selected_row_routes_to_output() {
     for dark in [false, true] {
         let mut h = output_viewer_fixture();
         h.app.preferences.theme = if dark { "dark" } else { "light" }.into();
@@ -5767,6 +6117,10 @@ fn output_viewer_has_sections_without_pages_or_footer_and_selected_row_routes_to
             assert!(crate::scenario::rect_of(&format!("dialog:section:{}", h.app.tr(key))).is_some(), "{key}");
         }
         assert!(crate::scenario::rect_of("render:job-footer").is_none());
+        let footer = crate::scenario::rect_of("render:output-footer").unwrap();
+        for target in ["render:output:render", "render:output:all-shots"] {
+            assert!(footer.contains_rect(crate::scenario::rect_of(target).unwrap()));
+        }
         for page in ["output", "effects", "all"] {
             assert!(crate::scenario::rect_of(&format!("render:page:{page}")).is_none());
         }
@@ -6240,6 +6594,145 @@ fn render_lights_each_kind_contains_design_sections_and_real_parameter_fields_in
     }
 }
 
+fn render_results_compare_fixture() -> (Harness, solidcraft_engine::render::job::JobId, solidcraft_engine::render::job::JobId) {
+    let mut h = output_viewer_fixture();
+    h.call("ui.resize", json!({"width":1440,"height":900}));
+    let first = completed_preview(&mut h, [20, 40, 60]);
+    h.app.render_workspace.view.job = Some(first);
+    h.app.render_workspace.view.job_shot = Some("Front".into());
+    cache_render_images(&mut h.app, &h.ctx);
+    let second = completed_preview(&mut h, [80, 100, 120]);
+    h.app.render_workspace.view.job = Some(second);
+    h.app.render_workspace.view.job_shot = Some("Hero".into());
+    cache_render_images(&mut h.app, &h.ctx);
+    (h, first, second)
+}
+
+#[test]
+fn render_results_compare_live_two_renders_swap_labels_and_common_framing_use_the_shared_controls() {
+    let (mut h, first, second) = render_results_compare_fixture();
+    let document = h.app.session.doc.clone();
+    let before = (h.app.session.undo.len(), h.app.session.redo.len(), h.app.session.revision);
+    let camera = h.app.cam;
+    h.app.run("render.compare", json!({"left":"live","right":1})).unwrap();
+    h.frames(3);
+    let view = h.app.render_workspace.view.compare.as_ref().unwrap();
+    assert_eq!((view.left, view.right, view.reference), (None, Some(second), second));
+    let image = crate::scenario::rect_of("render:compare:image").unwrap();
+    let canvas = crate::scenario::rect_of("render:compare:canvas").unwrap();
+    for target in ["render:compare:left-label", "render:compare:right-label", "render:compare:divider"] {
+        assert!(canvas.contains_rect(crate::scenario::rect_of(target).unwrap()), "{target}");
+    }
+    assert!(
+        h.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == h.app.tr("render.compare_live_preview")))
+    );
+    h.step(&json!({"click":{"handle":"render:compare:swap"}})).unwrap();
+    h.frames(2);
+    let view = h.app.render_workspace.view.compare.as_ref().unwrap();
+    assert_eq!((view.left, view.right, view.reference), (Some(second), None, second));
+    assert_eq!(crate::scenario::rect_of("render:compare:image"), Some(image));
+    h.app.run("render.compare", json!({"left":0,"right":1})).unwrap();
+    h.frames(2);
+    let first_texture = h.app.render_workspace.comparison_images.iter().find(|(job, _)| *job == first).unwrap().1.as_ref().unwrap().id();
+    let second_texture = h.app.render_workspace.image.as_ref().unwrap().1.as_ref().unwrap().id();
+    let vertices = |texture| {
+        h.shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Mesh(mesh) if mesh.texture_id == texture => Some(mesh.vertices.iter().map(|vertex| vertex.pos).collect::<Vec<_>>()),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert_eq!(vertices(first_texture), vertices(second_texture), "both rendered sources use the same image framing");
+    h.step(&json!({"click":{"handle":"render:compare:swap"}})).unwrap();
+    h.frames(2);
+    assert_eq!(h.app.render_workspace.image.as_ref().unwrap().1.as_ref().unwrap().id(), first_texture);
+    assert!(h.app.render_workspace.comparison_images.iter().any(|(job, image)| *job == second && image.as_ref().unwrap().id() == second_texture));
+    assert!(h.app.render_workspace.comparison_images.len() <= 2);
+    assert_eq!(h.app.cam, camera);
+    assert!(Arc::ptr_eq(&document, &h.app.session.doc));
+    assert_eq!(before, (h.app.session.undo.len(), h.app.session.redo.len(), h.app.session.revision));
+    h.app.run("render.compare", json!({"off":true})).unwrap();
+    assert!(h.app.render_workspace.view.compare.is_none());
+    assert!(h.app.render_workspace.comparison_images.is_empty());
+}
+
+#[test]
+fn render_results_compare_divider_drag_clamps_and_blocks_all_camera_input() {
+    use egui::{Event, Modifiers, MouseWheelUnit, PointerButton, vec2};
+    let (mut h, _, _) = render_results_compare_fixture();
+    h.app.run("render.compare", json!({"left":0,"right":1})).unwrap();
+    let pending = h.app.run("render.start", json!({"settings":{"width":16,"height":16}})).unwrap()["job"].clone();
+    assert!(!h.app.render_workspace.view.follow_job, "new job previews must not replace comparison framing");
+    h.frames(3);
+    h.app.preferences.nav = "maya".into();
+    h.app.render_workspace.view.result_scale = ResultScale::Free;
+    let product = h.app.cam;
+    let result = h.app.render_workspace.view.result_camera;
+    let document = h.app.session.doc.clone();
+    let before = (h.app.session.undo.len(), h.app.session.redo.len(), h.app.session.revision);
+    let canvas = crate::scenario::rect_of("render:compare:canvas").unwrap();
+    let start = crate::scenario::rect_of("render:compare:handle").unwrap().center();
+    h.frame_with(vec![
+        Event::ModifiersChanged(Modifiers::ALT),
+        Event::PointerMoved(start),
+        Event::PointerButton { pos: start, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::ALT },
+    ]);
+    let end = egui::pos2(canvas.right() + 100.0, start.y);
+    h.frame_with(vec![
+        Event::PointerMoved(end),
+        Event::MouseWheel { unit: MouseWheelUnit::Point, delta: vec2(0.0, -300.0), modifiers: Modifiers::ALT, phase: egui::TouchPhase::Move },
+    ]);
+    assert!(
+        (h.app.render_workspace.view.compare.as_ref().unwrap().position - 0.95).abs() < 1e-6,
+        "divider position {:?}, canvas {canvas:?}, press {start:?}, pointer {end:?}, captured {:?}",
+        h.app.render_workspace.view.compare.as_ref().unwrap().position,
+        h.ctx.dragged_id()
+    );
+    assert_eq!(h.app.render_workspace.view.result_camera, result);
+    assert_eq!(h.app.cam, product);
+    let end = egui::pos2(canvas.left() - 100.0, start.y);
+    h.frame_with(vec![Event::PointerMoved(end)]);
+    assert!((h.app.render_workspace.view.compare.as_ref().unwrap().position - 0.05).abs() < 1e-6);
+    assert_eq!(h.app.render_workspace.view.result_camera, result);
+    assert_eq!(h.app.cam, product);
+    h.frame_with(vec![
+        Event::PointerButton { pos: end, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::ALT },
+        Event::ModifiersChanged(Modifiers::NONE),
+    ]);
+    assert!(Arc::ptr_eq(&document, &h.app.session.doc));
+    assert_eq!(before, (h.app.session.undo.len(), h.app.session.redo.len(), h.app.session.revision));
+    h.app.run("render.cancel", json!({"job":pending})).unwrap();
+}
+
+#[test]
+fn render_results_compare_live_projection_matches_image_fit_zoom_and_pan_without_an_oversized_gpu_viewport() {
+    use solidcraft_engine::geom::Vec3;
+    let canvas = egui::Rect::from_min_size(egui::pos2(100.0, 200.0), egui::vec2(800.0, 600.0));
+    for fov in [0.0, 0.6] {
+        let camera = Camera { fov, roll: 0.25, ..Default::default() };
+        for image in [
+            egui::Rect::from_center_size(canvas.center(), egui::vec2(400.0, 400.0)),
+            egui::Rect::from_center_size(canvas.center(), egui::vec2(1600.0, 1200.0)),
+            egui::Rect::from_min_size(egui::pos2(-200.0, 350.0), egui::vec2(1200.0, 900.0)),
+        ] {
+            let projection = product_projection(camera, 100.0, canvas, Some(image));
+            for point in [camera.target, camera.target + Vec3::X * 5.0, camera.target + Vec3::Z * 10.0] {
+                let (x, y, _) = camera.to_screen(point, f64::from(image.width()), f64::from(image.height()), 100.0).unwrap();
+                let expected = egui::pos2(image.left() + x as f32, image.top() + y as f32);
+                let clip = projection.apply(point);
+                let actual = egui::pos2(
+                    canvas.left() + ((clip[0] / clip[3] + 1.0) * 0.5) as f32 * canvas.width(),
+                    canvas.top() + ((1.0 - clip[1] / clip[3]) * 0.5) as f32 * canvas.height(),
+                );
+                assert!(actual.distance(expected) < 0.001, "{actual:?} != {expected:?}");
+            }
+        }
+        assert_eq!(product_projection(camera, 100.0, canvas, None), camera.view_proj(f64::from(canvas.width() / canvas.height()), 100.0));
+    }
+}
+
 #[test]
 fn render_lighting_preset_materialises_values_and_replacement_requires_review_consent() {
     let mut h = render_lights_fixture();
@@ -6406,4 +6899,189 @@ fn the_field_of_view_rescales_only_the_design_view() {
     h.frames(2);
     assert!(h.app.ui.perspective);
     assert!((size(h.app.cam, 1.2) / size(design, 0.6) - 1.0).abs() < 1e-9, "the design view keeps its size: {:?}", h.app.cam);
+}
+
+/// Fit Product keeps the whole product inside the image, whatever its aspect: a picture
+/// taller than wide moves the camera back so the sides hold it too.
+#[test]
+fn fit_aspect_keeps_the_product_inside_a_tall_image() {
+    use solidcraft_engine::geom::{Aabb3, Vec3};
+    let bounds = Aabb3 { min: Vec3::new(-30.0, -30.0, -30.0), max: Vec3::new(30.0, 30.0, 30.0) };
+    let radius = bounds.diagonal();
+    for fov in [0.0, std::f64::consts::FRAC_PI_4] {
+        let mut landscape = Camera { fov, ..Default::default() };
+        assert!(landscape.fit_aspect(&bounds, 2.0));
+        let mut plain = Camera { fov, ..Default::default() };
+        plain.fit(&bounds);
+        assert_eq!(landscape, plain, "a wide picture keeps the standard fit");
+        for aspect in [0.5, 0.25] {
+            let mut cam = Camera { fov, ..Default::default() };
+            assert!(cam.fit_aspect(&bounds, aspect));
+            for p in corners(&bounds) {
+                let q = cam.view_proj(aspect, radius).apply(p);
+                let (x, y) = (q[0] / q[3], q[1] / q[3]);
+                assert!(x.abs() <= 1.0 && y.abs() <= 1.0, "fov {fov}, aspect {aspect}: corner {p:?} projects to ({x}, {y}), outside the picture");
+            }
+        }
+        // Nothing to fit leaves the camera alone.
+        let mut cam = Camera { fov, distance: 123.0, ..Default::default() };
+        assert!(!cam.fit_aspect(&Aabb3::EMPTY, 0.5));
+        assert_eq!(cam.distance, 123.0);
+    }
+}
+
+fn corners(b: &solidcraft_engine::geom::Aabb3) -> Vec<solidcraft_engine::geom::Vec3> {
+    let mut out = Vec::new();
+    for x in [b.min.x, b.max.x] {
+        for y in [b.min.y, b.max.y] {
+            for z in [b.min.z, b.max.z] {
+                out.push(solidcraft_engine::geom::Vec3::new(x, y, z));
+            }
+        }
+    }
+    out
+}
+
+/// Entering Render fits the product to the setup in effect, not to the draft that setup
+/// replaces: in a cold workspace whose saved Studio setup is portrait (1024 × 4096) the fit
+/// waits for the setup to load, so with Frame open the product sits inside the final 1:4
+/// picture, in orthographic and in perspective, and leaving Render gives the Design camera
+/// back.
+#[test]
+fn entering_render_fits_a_saved_portrait_setup_inside_its_final_frame() {
+    for fov in [0.0, 0.8] {
+        let mut h = Harness::new();
+        h.app.run("solid.box", json!({"length":60,"width":20,"height":20})).unwrap();
+        let name = h.app.render_workspace.view.name.clone();
+        h.app.run("render.settings.set", json!({"name":name,"set":{"width":1024,"height":4096}})).unwrap();
+        h.app.ui.perspective = fov > 0.0;
+        h.app.cam.fov = fov;
+        h.frames(2);
+        let design = (h.app.cam, h.app.ui.perspective);
+        let draft = &h.app.render_workspace.view.draft;
+        assert_ne!((draft.width, draft.height), (1024, 4096), "the cold draft is still the default");
+        h.app.render_workspace.view.stage = Stage::Frame;
+        enter(&mut h.app, true).unwrap();
+        h.frames(3);
+        assert!(shot::overlay_visible(&h.app));
+        let draft = &h.app.render_workspace.view.draft;
+        assert_eq!((draft.width, draft.height), (1024, 4096), "the saved setup is in effect");
+        let frame = shot::preview_rect(&h.app, h.app.viewport.rect.unwrap()).unwrap();
+        assert!((frame.width() / frame.height() - 0.25).abs() < 1e-3, "{frame:?}");
+        let scene = solidcraft_engine::product_scene::extract(&h.app.session).unwrap();
+        let cam = h.app.cam;
+        let radius = scene.bounds.diagonal().max(10.0) + scene.bounds.center().dist(cam.target);
+        for p in corners(&scene.bounds) {
+            let (x, y, _) = cam.to_screen(p, f64::from(frame.width()), f64::from(frame.height()), radius).unwrap();
+            assert!(
+                (0.0..=f64::from(frame.width())).contains(&x) && (0.0..=f64::from(frame.height())).contains(&y),
+                "fov {fov}: corner {p:?} at ({x}, {y}) outside the {frame:?} picture"
+            );
+        }
+        enter(&mut h.app, false).unwrap();
+        assert_eq!((h.app.cam, h.app.ui.perspective), design, "fov {fov}: leaving Render restores the Design camera");
+    }
+}
+
+#[test]
+fn render_results_compare_segments_work_from_live_and_close_safely_when_a_source_is_discarded() {
+    let (mut h, first, second) = render_results_compare_fixture();
+    h.app.run("render.result.view", json!({"view":"model"})).unwrap();
+    h.frames(3);
+    h.step(&json!({"click":{"handle":"render:compare:result:0"}})).unwrap();
+    h.frames(2);
+    let view = h.app.render_workspace.view.compare.as_ref().unwrap();
+    assert_eq!((view.left, view.right), (None, Some(first)));
+    h.step(&json!({"click":{"handle":"render:compare:result:1"}})).unwrap();
+    h.frames(2);
+    assert_eq!(h.app.render_workspace.view.compare.as_ref().unwrap().right, Some(second));
+    h.step(&json!({"click":{"handle":"render:compare:live"}})).unwrap();
+    h.frames(2);
+    assert!(h.app.render_workspace.view.compare.is_none());
+    assert_eq!(h.app.render_workspace.view.completed, Some(second));
+    h.app.run("render.compare", json!({"left":0,"right":1})).unwrap();
+    h.frames(2);
+    h.app.run("render.result.discard", json!({"index":0})).unwrap();
+    h.frames(2);
+    assert!(h.app.render_workspace.view.compare.is_none());
+    assert_eq!(h.app.render_workspace.view.completed, Some(second));
+    let third = completed_preview(&mut h, [100, 120, 140]);
+    let fourth = completed_preview(&mut h, [140, 160, 180]);
+    h.app.run("render.compare", json!({"left":1,"right":2})).unwrap();
+    h.app.run("render.result.discard", json!({"index":0})).unwrap();
+    h.frames(2);
+    let view = h.app.render_workspace.view.compare.as_ref().unwrap();
+    assert_eq!((view.left, view.right), (Some(third), Some(fourth)), "discarding an unrelated earlier row must not retarget comparison");
+    assert_eq!(h.app.session.render_comparison(), Some([Some(third), Some(fourth)]));
+    assert!(h.app.run("render.compare", json!({"left":"live","right":99})).is_err());
+}
+
+fn render_results_batch_fixture() -> Harness {
+    let mut h = output_viewer_fixture();
+    h.call("ui.resize", json!({"width":1440,"height":900}));
+    for (index, name) in ["Front", "Hero", "Top"].iter().enumerate() {
+        let camera = Camera { yaw: index as f64 * 0.3, ..Default::default() };
+        h.app.run("render.settings.set", json!({"name":name,"set":{"camera":camera,"width":8,"height":8}})).unwrap();
+    }
+    h.frames(3);
+    h
+}
+
+#[test]
+fn render_results_batch_output_footer_only_starts_on_click_and_cancel_drops_waiting_shots() {
+    let mut h = render_results_batch_fixture();
+    assert!(h.app.render_workspace.view.job.is_none());
+    assert_eq!((h.app.session.render_queue_state().running, h.app.session.render_queue_state().waiting), (0, 0));
+    h.app.render_workspace.view.draft.width = 128;
+    h.app.render_workspace.view.draft.height = 128;
+    h.app.render_workspace.view.dirty = true;
+    h.frames(2);
+    let document = h.app.session.doc.clone();
+    let before = (h.app.session.undo.len(), h.app.session.redo.len(), h.app.session.revision);
+    let camera = h.app.cam;
+    h.step(&json!({"click":{"handle":"render:output:all-shots"}})).unwrap();
+    h.frames(1);
+    let queue = h.app.session.render_queue_state();
+    assert_eq!((queue.running, queue.waiting), (1, 2));
+    assert_eq!(h.app.render_workspace.view.job, queue.job);
+    let status = crate::i18n::format("render.batch_status", &[("running", "1"), ("waiting", "2")]);
+    assert!(h.shapes.iter().any(|shape| matches!(&shape.shape,egui::Shape::Text(text) if text.galley.text()==status)));
+    assert!(crate::scenario::rect_of("render:shots:queue").is_some());
+    h.step(&json!({"click":{"handle":"render:stage:render.cancel"}})).unwrap();
+    h.frames(3);
+    assert_eq!((h.app.session.render_queue_state().running, h.app.session.render_queue_state().waiting), (0, 0));
+    assert!(h.app.session.render_retained_results().unwrap().is_empty());
+    assert_eq!(h.app.cam, camera);
+    assert!(Arc::ptr_eq(&document, &h.app.session.doc));
+    assert_eq!(before, (h.app.session.undo.len(), h.app.session.redo.len(), h.app.session.revision));
+}
+
+#[test]
+fn render_results_batch_continues_in_background_tabs_and_keeps_each_shot_result_with_its_document() {
+    let mut h = render_results_batch_fixture();
+    let document = h.app.session.doc.clone();
+    let before = (h.app.session.undo.len(), h.app.session.redo.len());
+    let captured_revision = h.app.session.revision;
+    let host = h.app.session.render_job_host().unwrap().clone();
+    h.app.run("render.batch", json!({"request":{"settings":{"width":8,"height":8}}})).unwrap();
+    crate::documents::open_tab(&mut h.app, Session::default()).unwrap();
+    let other = h.app.session.doc.clone();
+    for _ in 0..3 {
+        for _ in 0..100 {
+            if !host.pump(4096).unwrap() {
+                break;
+            }
+        }
+        h.frames(1);
+    }
+    assert!(Arc::ptr_eq(&other, &h.app.session.doc));
+    assert!(h.app.session.render_retained_results().unwrap().is_empty());
+    crate::documents::switch(&mut h.app, 0);
+    h.frames(2);
+    let results = h.app.session.render_retained_results().unwrap();
+    assert_eq!(results.iter().map(|result| result.shot.as_deref().unwrap()).collect::<Vec<_>>(), ["Front", "Hero", "Top"]);
+    assert_eq!((h.app.session.render_queue_state().running, h.app.session.render_queue_state().waiting), (0, 0));
+    assert!(Arc::ptr_eq(&document, &h.app.session.doc));
+    assert_eq!(before, (h.app.session.undo.len(), h.app.session.redo.len()));
+    assert!(results.iter().all(|result| result.frame.scene_generation == captured_revision));
 }

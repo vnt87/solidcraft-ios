@@ -176,6 +176,8 @@ pub(crate) fn remap_link(
             remap_link(b, ids, names, bodies, depth + 1);
         }
         LinkSource::Plane { name } => mapped_name(name, names),
+        // A construction axis, by name (#9324); the origin axes are no feature's.
+        LinkSource::Axis { name } if !matches!(name.as_str(), "X" | "Y" | "Z") => mapped_name(name, names),
         _ => {}
     }
 }
@@ -314,7 +316,7 @@ fn checked_plane(p: &PlaneRef, depth: usize) -> crate::Result<()> {
                 checked_geo(g, depth + 1)?;
             }
         }
-        PlaneRef::Midplane { a, b } | PlaneRef::TwoEdges { a, b } => {
+        PlaneRef::Midplane { a, b } | PlaneRef::TwoEdges { a, b } | PlaneRef::AxisPoint { axis: a, point: b } => {
             checked_geo(a, depth + 1)?;
             checked_geo(b, depth + 1)?;
         }
