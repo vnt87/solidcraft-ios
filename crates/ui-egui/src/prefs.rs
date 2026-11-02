@@ -263,6 +263,7 @@ pub const NAV_PRESETS: &[NavPreset] = &[
         label: "Touch (iPad)",
         help: "One finger on empty space orbits, two fingers pan, a pinch zooms; the Apple Pencil selects and edits and never moves the view. With a mouse, the left button orbits from empty space and middle or right drag pans.",
         reverse_zoom: false,
+        reverse_drag_zoom: false,
         middle_double_click: None,
         right_drag_orbits: None,
         // The left button orbits from empty space only, and never with the Pencil down:
