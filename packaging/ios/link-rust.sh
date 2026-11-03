@@ -16,7 +16,7 @@ for arch in ${ARCHS}; do
         -framework UIKit -framework Foundation -framework Metal -framework MetalKit \
         -framework QuartzCore -framework CoreGraphics -framework CoreText \
         -framework Security -framework SystemConfiguration -framework CoreFoundation \
-        -framework CoreVideo -framework IOSurface -lc++ -lz -lobjc -liconv \
+        -framework CoreVideo -framework IOSurface -framework GameController -lc++ -lz -lobjc -liconv \
         -o "$output"
     if [ "$#" -eq 0 ]; then set -- "$output"; else set -- "$@" "$output"; fi
 done
