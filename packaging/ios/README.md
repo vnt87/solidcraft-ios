@@ -68,7 +68,12 @@ the choice into the container; Save writes to a reserved managed path and hands 
 export sheet the first time, then to the remembered destination silently. Files hands a `.sc`
 design over through the scene (at launch or while the app runs) and it opens like a picked one,
 a recent design reopens from the container, and Copy/Paste use the system pasteboard, so text
-crosses to and from other apps. The iPad Air 13-inch (M3)
+crosses to and from other apps. A hardware keyboard (a Logitech Folio, say) is read whole: iPadOS
+gives winit only the characters it types, so the runner takes the keys from GameController and
+injects Enter, the arrows, Home/End, Page Up/Down, Delete, Esc, Tab, F-keys and the ⌘/Ctrl chords
+with their modifiers, with key repeat (`apps/solidcraft-ios/src/gc_keyboard.rs` and
+`hw_keys.rs`, host-tested — a hardware ⌘Z is asserted to carry the shortcut the menu item shows).
+Not yet verified on a device. The iPad Air 13-inch (M3)
 simulator boot has been verified: the ribbon, Browser, 3D viewport, orientation triad, view toolbar
 and History timeline all draw, and the log shows egui and UIKit agreeing on the safe-area insets.
 Still missing: multiple windows. `SolidCraftIos` logs to

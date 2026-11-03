@@ -14,11 +14,15 @@ pub struct RunnerApp {
     last: Option<String>,
     /// The last text written to the pasteboard, so one copy writes it once.
     last_copied: Option<String>,
+    /// Hardware-keyboard state: the keys winit never delivers (Enter, arrows, ⌘ shortcuts).
+    keys: crate::hw_keys::HwKeys,
+    /// Events produced outside the input hook (releasing keys on focus loss), sent with the next frame.
+    pending: Vec<egui::Event>,
 }
 
 impl RunnerApp {
     pub fn new(solve: SolveApp) -> Self {
-        Self { solve, last: None, last_copied: None }
+        Self { solve, last: None, last_copied: None, keys: Default::default(), pending: Vec::new() }
     }
 
     /// Logs what egui lays out with: the persisted insets, not the per-frame raw input, which only
@@ -79,6 +83,10 @@ fn content_ui(app: &mut SolveApp, ui: &mut egui::Ui) {
 impl eframe::App for RunnerApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.report(ctx);
+        if !ctx.input(|i| i.focused) {
+            // Key-ups may never arrive once the app is in the background.
+            self.pending.extend(self.keys.release_all());
+        }
         // The design on screen is the one whose commands a crash report replays.
         self.solve.session.crash_journal = solidcraft_engine::crash::enabled();
         // The system asking the window to close (a scene disconnect, the Simulator being shut
@@ -100,7 +108,17 @@ impl eframe::App for RunnerApp {
         self.mirror_clipboard(ui.ctx());
     }
 
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // The keys winit's UIKit view never forwards: read the HID transitions and inject them.
+        let now = raw_input.time.unwrap_or_default();
+        for (code, pressed) in crate::gc_keyboard::drain() {
+            raw_input.events.extend(self.keys.handle(code, pressed, now));
+        }
+        raw_input.events.append(&mut self.pending);
+        raw_input.events.extend(self.keys.tick(now));
+        if let Some(wait) = self.keys.next_wake(now) {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait.max(0.001)));
+        }
         self.solve.raw_input_hook(raw_input);
         // egui's window layer keeps its own clipboard; a paste the user makes carries what the
         // system pasteboard holds (read only on that gesture: iOS asks before another app's

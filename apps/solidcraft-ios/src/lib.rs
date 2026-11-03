@@ -9,6 +9,11 @@
 #[allow(unsafe_code)]
 mod apple_entry;
 mod documents;
+#[cfg(target_os = "ios")]
+#[allow(unsafe_code)]
+mod gc_keyboard;
+#[cfg(any(target_os = "ios", test))]
+mod hw_keys;
 #[cfg(any(target_os = "ios", test))]
 mod logging;
 #[cfg(target_os = "ios")]
@@ -124,6 +129,9 @@ pub fn run() -> Result<(), String> {
             native_options(),
             Box::new(|cc| {
                 scenes::attach(cc)?;
+                // Enter, arrows, Escape, F-keys and every ⌘ chord: winit's UIKit view forwards only
+                // text and Backspace, so the hardware keyboard is read separately and injected.
+                gc_keyboard::install(cc.egui_ctx.clone());
                 // Hide the status bar through the safe platform API so it cannot overlay the
                 // application bar; scene-based safe-area handling still feeds egui its insets.
                 use winit::platform::ios::WindowExtIOS;

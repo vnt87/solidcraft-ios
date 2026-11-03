@@ -39,7 +39,8 @@ log = { workspace = true }
 # Already pinned by eframe; the safe iOS window extension hides the status bar.
 winit = { version = "=0.30.13", default-features = false }
 objc2 = "=0.6.5"
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSError", "NSURL", "NSString", "NSObject", "NSDictionary", "NSFileManager", "NSPathUtilities", "NSFileCoordinator", "NSFilePresenter", "NSOperation", "NSSet", "NSValue", "block2"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSError", "NSURL", "NSString", "NSObject", "NSDictionary", "NSFileManager", "NSPathUtilities", "NSFileCoordinator", "NSFilePresenter", "NSOperation", "NSSet", "NSValue", "NSNotification", "block2"] }
+objc2-game-controller = { version = "=0.3.2", default-features = false, features = ["std", "GCKeyboard", "GCKeyboardInput", "GCKeyCodes", "GCControllerButtonInput", "GCControllerElement", "GCPhysicalInputProfile", "block2", "objc2-core-foundation"] }
 objc2-ui-kit = { version = "=0.3.2", default-features = false, features = ["std", "UIApplication", "UIScene", "UISceneSession", "UISceneOptions", "UIWindow", "UIWindowScene", "UIResponder", "UIViewController", "UIDocumentPickerViewController", "UIOpenURLContext", "UIPasteboard", "block2", "objc2-uniform-type-identifiers"] }
 objc2-uniform-type-identifiers = { version = "=0.3.2", default-features = false, features = ["std", "UTType"] }
 block2 = "=0.6.2"
