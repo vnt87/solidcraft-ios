@@ -4231,7 +4231,7 @@ dependencies = [
 
 [[package]]
 name = "solidcraft-ios"
-version = "0.30.0"
+version = "0.40.0-rc.1"
 dependencies = [
  "block2 0.6.2",
  "dispatch2",
