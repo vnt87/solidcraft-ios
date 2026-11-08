@@ -68,6 +68,11 @@ pub fn tick(app: &mut SolveApp, wait: bool) {
     };
     let saved = r.is_ok();
     app.finish_command(command, &r);
+    // Saving a newer SolidCraft's file keeps what this version can't read, unless it was changed
+    // around: then the save says what went.
+    if let Some(first) = r.as_ref().ok().and_then(|v| v["warnings"].as_array()).and_then(|w| w.first()).and_then(serde_json::Value::as_str) {
+        app.set_status(first, true);
+    }
     // The file reached the user once the host has taken it there; the managed copy stays the
     // design's own (iPadOS), so a failed hand-over costs a status message, not the save.
     if saved
