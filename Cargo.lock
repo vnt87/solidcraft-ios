@@ -5070,6 +5070,7 @@ dependencies = [
  "objc2-uniform-type-identifiers 0.3.2",
  "serde_json",
  "solidcraft-engine",
+ "solidcraft-theme",
  "solidcraft-ui-egui",
  "winit",
 ]
