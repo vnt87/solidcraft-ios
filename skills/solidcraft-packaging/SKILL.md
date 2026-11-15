@@ -30,3 +30,7 @@ Development pushes are not application releases. Pushing to `main` or pushing a 
 - iPadOS: `packaging/ios` is an Xcode project around the `solidcraft-ios` static library; `cargo xtask ios --sim` builds, installs and launches it on an iPad simulator, and `--screenshot PATH` captures a PNG. The plist, icon and bundle contract have their own checks (`python3 -m unittest discover -s packaging/ios/tests`). It is not part of a release yet.
 - Nix: `flake.nix` and `docs/nix.md`. Building: `docs/building.md`. Downloads: `docs/downloads.md`.
 - Build with `CARGO_TARGET_DIR=<repo>/target`. Windows from Linux: `cargo xwin build --release --target x86_64-pc-windows-msvc -p solidcraft`.
+
+## No integrations with other platforms
+
+Don't build someone's platform or service into SolidCraft (their cloud, sync, hosting, WebDAV, accounts, embedding the app elsewhere, host-page file bridges) without the maintainer's yes first; unasked PRs are closed. Flatpak, Snap, winget, Homebrew, AUR, OS keyrings and file dialogs are fine. The only official external host is the ArtCraft launcher, which downloads our release binaries.
