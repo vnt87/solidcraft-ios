@@ -99,7 +99,7 @@ impl SolveApp {
         // An export has already written its file by the time the host answers, and its host
         // (iPadOS) takes it to the user. A design save writes on a worker and publishes there
         // (`save_job`), so only a save or export asks to publish.
-        let complete = Box::new(move |app: &mut SolveApp, path: Option<String>| {
+        self.begin_file_task(future, move |app: &mut SolveApp, path: Option<String>| {
             let written = path.clone();
             complete(app, path);
             if publish
@@ -111,7 +111,6 @@ impl SolveApp {
                 app.set_status(error, true);
             }
         });
-        self.begin_file_task(future, move |app, path| complete(app, path));
     }
 
     /// Keep the existing picker/input lock while asynchronous file work runs.
